@@ -1,0 +1,1699 @@
+import pygame
+import numpy as np
+import sys
+import random
+import time
+import json
+import math
+import traceback
+
+# 初始化pygame
+pygame.init()
+
+# 设置屏幕大小为手机屏幕大小
+WIDTH, HEIGHT = pygame.display.Info().current_w, pygame.display.Info().current_h
+screen = pygame.display.set_mode((WIDTH, HEIGHT), pygame.FULLSCREEN)
+pygame.display.set_caption('2048')
+
+# 设置颜色 - 黑色背景，白色文字
+BG_COLOR = (0, 0, 0)  # 黑色背景
+MENU_BG_COLOR = (20, 20, 30)  # 深蓝黑色
+SHOP_BG_COLOR = (30, 30, 50)  # 深蓝黑色
+TEXT_COLOR = (255, 255, 255)  # 白色文字
+
+# 棋盘颜色 - 淡蓝色系
+CELL_COLORS = {
+    0: (180, 220, 240),  # 非常淡的蓝色
+    2: (150, 200, 230),  # 淡蓝色
+    4: (120, 180, 220),  # 淡蓝色
+    8: (90, 160, 210),   # 中等淡蓝
+    16: (60, 140, 200),  # 蓝色
+    32: (40, 120, 190),  # 深蓝色
+    64: (30, 100, 180),  # 深蓝色
+    128: (20, 80, 170),  # 深蓝色
+    256: (10, 60, 160),  # 深蓝色
+    512: (5, 40, 150),   # 深蓝色
+    1024: (0, 30, 140),  # 深蓝色
+    2048: (0, 20, 130)   # 深蓝色
+}
+
+# 冰块高光颜色
+ICE_HIGHLIGHT = (220, 240, 255, 100)
+
+# 设置字体 - 使用英文字体
+TITLE_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 15), bold=True)
+MENU_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 18))
+SCORE_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 30))
+BUTTON_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 30))
+ITEM_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 35))
+SHOP_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 40))
+DESC_FONT = pygame.font.SysFont('Arial', int(HEIGHT // 50))
+
+# 初始化游戏板
+board = np.zeros((4, 4), dtype=int)
+score = 0
+total_points = 0  # 玩家总积分
+high_score = 0  # 最高分
+cell_size = int(min(WIDTH, HEIGHT) / 4.5)
+margin = (WIDTH - 4 * cell_size) // 2
+top_margin = (HEIGHT - 4 * cell_size) // 2 + 50  # 增加顶部边距
+
+# 游戏难度设置
+DIFFICULTIES = {
+    'easy': {'multiplier': 0.1, 'color': (0, 200, 0)},    # 简单 - 10%积分加成
+    'medium': {'multiplier': 0.15, 'color': (255, 200, 0)}, # 中等 - 15%积分加成
+    'hard': {'multiplier': 0.2, 'color': (255, 0, 0)}      # 困难 - 20%积分加成
+}
+
+# 难度类
+class DifficultySettings:
+    def __init__(self, name):
+        self.name = name
+        self.points_multiplier = 0.0
+        self.spawn_weights = {2: 0.0, 4: 0.0}
+
+# 游戏设置类
+class GameSettings:
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+            cls._instance._initialize()
+        return cls._instance
+
+    def _initialize(self):
+        self.easy = DifficultySettings("easy")
+        self.easy.points_multiplier = 0.1
+        self.easy.spawn_weights = {2: 0.8, 4: 0.2}
+
+        self.medium = DifficultySettings("medium")
+        self.medium.points_multiplier = 0.15
+        self.medium.spawn_weights = {2: 0.7, 4: 0.3}
+
+        self.hard = DifficultySettings("hard")
+        self.hard.points_multiplier = 0.2
+        self.hard.spawn_weights = {2: 0.6, 4: 0.4}
+
+        self.set_difficulty("medium")
+
+    def set_difficulty(self, difficulty_name):
+        if difficulty_name == "easy":
+            self.current_difficulty = self.easy
+        elif difficulty_name == "medium":
+            self.current_difficulty = self.medium
+        elif difficulty_name == "hard":
+            self.current_difficulty = self.hard
+
+    def get_current_difficulty(self):
+        return self.current_difficulty.name
+
+
+game_settings = GameSettings()
+
+# 道具设置 - 英文名称
+ITEM_TYPES = [
+    {
+        'name': 'Bomb', 
+        'color': (255, 0, 0), 
+        'shape': 'circle',
+        'base_price': 100,
+        'price_multiplier': 1.5,
+        'cooldown': 20,  # 20秒冷却
+        'description': 'Destroy a selected tile',
+        'count': 0
+    },
+    {
+        'name': 'Double', 
+        'color': (0, 255, 0), 
+        'shape': 'square',
+        'base_price': 150,
+        'price_multiplier': 1.5,
+        'cooldown': 15,  # 15秒冷却
+        'description': 'Double a selected tile',
+        'count': 0
+    },
+    {
+        'name': 'Clear Row', 
+        'color': (0, 0, 255), 
+        'shape': 'triangle',
+        'base_price': 200,
+        'price_multiplier': 1.5,
+        'cooldown': 25,  # 25秒冷却
+        'description': 'Clear an entire row',
+        'count': 0
+    },
+    {
+        'name': 'Shuffle', 
+        'color': (255, 255, 0), 
+        'shape': 'hexagon',
+        'base_price': 300,
+        'price_multiplier': 1.5,
+        'cooldown': 30,  # 30秒冷却
+        'description': 'Reset tiles around a selected tile',
+        'count': 0
+    },
+]
+
+# 道具冷却时间
+item_cooldowns = [0, 0, 0, 0]  # 对应四种道具的冷却时间
+selected_item = None  # 当前选中的道具
+
+# 玩家数据文件
+PLAYER_DATA_FILE = 'player_data.json'
+
+# 粒子系统类 - 雪花效果（从上往下飘落）
+class ParticleSystem:
+    def __init__(self):
+        self.particles = []
+        self.max_particles = 100
+        
+    def add_particle(self):
+        if len(self.particles) < self.max_particles:
+            # 粒子从屏幕顶部随机位置生成
+            x = random.randint(0, WIDTH)
+            y = random.randint(-50, -10)
+            # 粒子向下飘动的速度
+            speed_y = random.uniform(1.0, 3.0)
+            # 随机水平移动
+            speed_x = random.uniform(-0.5, 0.5)
+            # 粒子大小
+            size = random.randint(2, 5)
+            # 粒子透明度
+            alpha = random.randint(150, 255)
+            self.particles.append({
+                'x': x,
+                'y': y,
+                'speed_x': speed_x,
+                'speed_y': speed_y,
+                'size': size,
+                'alpha': alpha
+            })
+            
+    def update(self):
+        # 随机添加新粒子
+        if random.random() < 0.5:
+            self.add_particle()
+            
+        # 更新粒子位置
+        for particle in self.particles[:]:
+            particle['x'] += particle['speed_x']
+            particle['y'] += particle['speed_y']
+            
+            # 如果粒子超出屏幕底部，移除它
+            if particle['y'] > HEIGHT + 10:
+                self.particles.remove(particle)
+                
+    def draw(self, surface):
+        for particle in self.particles:
+            # 创建粒子表面
+            particle_surface = pygame.Surface((particle['size']*2, particle['size']*2), pygame.SRCALPHA)
+            # 绘制白色雪花粒子
+            pygame.draw.circle(
+                particle_surface,
+                (255, 255, 255, particle['alpha']),
+                (particle['size'], particle['size']),
+                particle['size']
+            )
+            surface.blit(particle_surface, (particle['x'] - particle['size'], particle['y'] - particle['size']))
+
+# 全局粒子系统
+particle_system = ParticleSystem()
+
+# 按钮类
+class Button:
+    def __init__(self, x, y, width, height, text, color, hover_color, radius=10):
+        self.rect = pygame.Rect(x, y, width, height)
+        self.text = text
+        self.color = color
+        self.hover_color = hover_color
+        self.is_hovered = False
+        self.radius = radius
+
+    def draw(self, surface=None):
+        if surface is None:
+            surface = screen
+        color = self.hover_color if self.is_hovered else self.color
+        pygame.draw.rect(surface, color, self.rect, border_radius=self.radius)
+        text_surf = BUTTON_FONT.render(self.text, True, TEXT_COLOR)
+        text_rect = text_surf.get_rect(center=self.rect.center)
+        surface.blit(text_surf, text_rect)
+
+    def check_hover(self, pos):
+        self.is_hovered = self.rect.collidepoint(pos)
+        return self.is_hovered
+
+    def is_clicked(self, pos, event):
+        if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+            return self.rect.collidepoint(pos)
+        return False
+
+# 道具按钮类（带图标）
+class ItemButton(Button):
+    def __init__(self, x, y, width, height, item_type, cooldown=0):
+        super().__init__(x, y, width, height, "", (100, 100, 100), (150, 150, 150))
+        self.item_type = item_type
+        self.cooldown = cooldown
+        self.last_used = 0
+        self.count = ITEM_TYPES[item_type]['count']
+        self.cooldown_rect = pygame.Rect(x, y, width, height)
+        self.is_selected = False  # 用于商店中选择道具
+        
+    def draw(self, surface=None):
+        if surface is None:
+            surface = screen
+            
+        # 绘制按钮背景
+        bg_color = (80, 80, 80) if self.count == 0 else ITEM_TYPES[self.item_type]['color']
+        hover_color = (100, 100, 100) if self.count == 0 else (
+            min(ITEM_TYPES[self.item_type]['color'][0] + 30, 255),
+            min(ITEM_TYPES[self.item_type]['color'][1] + 30, 255),
+            min(ITEM_TYPES[self.item_type]['color'][2] + 30, 255)
+        )
+        
+        # 在商店中选中状态
+        if self.is_selected:
+            bg_color = (
+                min(ITEM_TYPES[self.item_type]['color'][0] + 50, 255),
+                min(ITEM_TYPES[self.item_type]['color'][1] + 50, 255),
+                min(ITEM_TYPES[self.item_type]['color'][2] + 50, 255)
+            )
+        
+        color = hover_color if self.is_hovered else bg_color
+        pygame.draw.rect(surface, color, self.rect, border_radius=10)
+        
+        # 绘制道具图标
+        icon_rect = pygame.Rect(
+            self.rect.centerx - self.rect.width // 4,
+            self.rect.centery - self.rect.height // 4,
+            self.rect.width // 2,
+            self.rect.height // 2
+        )
+        pygame.draw.rect(surface, ITEM_TYPES[self.item_type]['color'], icon_rect, border_radius=5)
+
+        # 根据道具类型绘制不同的形状
+        if ITEM_TYPES[self.item_type]['shape'] == 'circle':
+            pygame.draw.circle(
+                surface,
+                (255, 255, 255),
+                icon_rect.center,
+                icon_rect.width // 2
+            )
+        elif ITEM_TYPES[self.item_type]['shape'] == 'square':
+            pygame.draw.rect(
+                surface,
+                (255, 255, 255),
+                (icon_rect.centerx - icon_rect.width // 4, icon_rect.centery - icon_rect.height // 4,
+                 icon_rect.width // 2, icon_rect.height // 2)
+            )
+        elif ITEM_TYPES[self.item_type]['shape'] == 'triangle':
+            triangle_points = [
+                (icon_rect.centerx, icon_rect.top + icon_rect.height // 4),
+                (icon_rect.left + icon_rect.width // 4, icon_rect.bottom - icon_rect.height // 4),
+                (icon_rect.right - icon_rect.width // 4, icon_rect.bottom - icon_rect.height // 4)
+            ]
+            pygame.draw.polygon(surface, (255, 255, 255), triangle_points)
+        elif ITEM_TYPES[self.item_type]['shape'] == 'hexagon':
+            hexagon_points = []
+            center_x, center_y = icon_rect.center
+            radius = icon_rect.width // 2
+            for i in range(6):
+                angle = 60 * i * math.pi / 180
+                hexagon_points.append((
+                    center_x + radius * math.cos(angle),
+                    center_y + radius * math.sin(angle)
+                ))
+            pygame.draw.polygon(surface, (255, 255, 255), hexagon_points)
+        
+        # 绘制冷却效果（仅在游戏中）
+        if self.count > 0 and not hasattr(self, 'is_shop_item'):
+            current_time = time.time()
+            if current_time - self.last_used < self.cooldown:
+                # 计算冷却进度
+                progress = (current_time - self.last_used) / self.cooldown
+                height = int(self.rect.height * progress)
+                cooldown_rect = pygame.Rect(
+                    self.rect.left,
+                    self.rect.top + self.rect.height - height,
+                    self.rect.width,
+                    height
+                )
+                pygame.draw.rect(surface, (0, 0, 0, 150), cooldown_rect)
+                
+                # 绘制冷却时间文本
+                remaining = int(self.cooldown - (current_time - self.last_used))
+                text = ITEM_FONT.render(str(remaining), True, TEXT_COLOR)
+                text_rect = text.get_rect(center=self.rect.center)
+                surface.blit(text, text_rect)
+        
+        # 如果道具数量为0，绘制禁用图标
+        if self.count == 0:
+            pygame.draw.line(surface, (255, 0, 0), 
+                            (self.rect.left, self.rect.top), 
+                            (self.rect.right, self.rect.bottom), 5)
+            pygame.draw.line(surface, (255, 0, 0), 
+                            (self.rect.right, self.rect.top), 
+                            (self.rect.left, self.rect.bottom), 5)
+        
+        # 在商店中绘制道具名称
+        if hasattr(self, 'is_shop_item'):
+            name_text = SHOP_FONT.render(ITEM_TYPES[self.item_type]['name'], True, TEXT_COLOR)
+            name_rect = name_text.get_rect(center=(self.rect.centerx, self.rect.bottom + 25))
+            surface.blit(name_text, name_rect)
+
+        # 绘制道具剩余次数（在右上角）
+        count_text = ITEM_FONT.render(f"x{self.count}", True, TEXT_COLOR)
+        count_rect = count_text.get_rect(topright=(self.rect.topright[0] - 5, self.rect.topright[1] + 5))
+        surface.blit(count_text, count_rect)
+
+# 加载玩家数据
+def load_player_data():
+    global total_points, high_score, ITEM_TYPES
+    try:
+        with open(PLAYER_DATA_FILE, 'r') as f:
+            data = json.load(f)
+            total_points = data.get('total_points', 0)
+            high_score = data.get('high_score', 0)
+            # 加载道具数量
+            for i, item in enumerate(ITEM_TYPES):
+                item['count'] = data.get(f'item_{i}_count', 0)
+    except:
+        total_points = 0
+        high_score = 0
+        for item in ITEM_TYPES:
+            item['count'] = 0
+
+# 保存玩家数据
+def save_player_data():
+    try:
+        data = {
+            'total_points': int(total_points),
+            'high_score': int(high_score)
+        }
+        # 保存道具数量
+        for i, item in enumerate(ITEM_TYPES):
+            data[f'item_{i}_count'] = item['count']
+        
+        with open(PLAYER_DATA_FILE, 'w') as f:
+            json.dump(data, f, default=str)
+        return True
+    except Exception as e:
+        print(f"Save player data error: {e}")
+        traceback.print_exc()
+        return False
+
+# 添加新数字
+def add_new_number():
+    empty_cells = [(i, j) for i in range(4) for j in range(4) if board[i][j] == 0]
+    if empty_cells:
+        i, j = random.choice(empty_cells)
+        # 根据当前难度的权重生成新数字
+        spawn_weights = game_settings.current_difficulty.spawn_weights
+        board[i][j] = random.choices([2, 4], weights=[spawn_weights[2], spawn_weights[4]])[0]
+
+# 绘制游戏板
+def draw_board():
+    screen.fill(BG_COLOR)
+    for i in range(4):
+        for j in range(4):
+            cell_rect = pygame.Rect(
+                margin + j * cell_size,
+                top_margin + i * cell_size,
+                cell_size,
+                cell_size
+            )
+            pygame.draw.rect(
+                screen,
+                CELL_COLORS.get(board[i][j], (255, 255, 255)),
+                cell_rect,
+                border_radius=int(cell_size / 10)
+            )
+            
+            # 添加玻璃质感特效 - 只在非空单元格上
+            if board[i][j] != 0:
+                # 玻璃质感层
+                glass_layer = pygame.Surface((cell_size, cell_size), pygame.SRCALPHA)
+                # 绘制白色透明包裹层
+                pygame.draw.rect(glass_layer, (255, 255, 255, 120), (0, 0, cell_size, cell_size), border_radius=int(cell_size / 10))
+                # 添加反光效果
+                pygame.draw.rect(glass_layer, (255, 255, 255, 200), (0, 0, cell_size, cell_size // 3), border_radius=int(cell_size / 10))
+                screen.blit(glass_layer, (margin + j * cell_size, top_margin + i * cell_size))
+            
+            if board[i][j] != 0:
+                text = BUTTON_FONT.render(str(board[i][j]), True, TEXT_COLOR)
+                text_rect = text.get_rect(center=cell_rect.center)
+                screen.blit(text, text_rect)
+
+    # 绘制分数 - 增加分数间距
+    score_text = SCORE_FONT.render(f'Score: {score}', True, TEXT_COLOR)
+    screen.blit(score_text, (20, 20))
+    
+    # 将最高分显示在更下方位置（下移40像素）
+    high_score_text = SCORE_FONT.render(f'Best: {high_score}', True, TEXT_COLOR)
+    screen.blit(high_score_text, (20, 60))
+    
+    # 显示当前难度（右上角）
+    diff_text = SCORE_FONT.render(f'Difficulty: {game_settings.get_current_difficulty().capitalize()}', True, DIFFICULTIES[game_settings.get_current_difficulty()]['color'])
+    screen.blit(diff_text, (WIDTH - diff_text.get_width() - 20, 20))
+    
+    # 显示玩家积分（右上角，在难度下方）
+    points_text = SCORE_FONT.render(f'Points: {total_points}', True, TEXT_COLOR)
+    screen.blit(points_text, (WIDTH - points_text.get_width() - 20, 60))
+
+# 移动数字
+def move_numbers(move_dir):
+    global score
+    moved = False
+    if move_dir == 'UP':
+        for j in range(4):
+            col = board[:, j]
+            new_col = [num for num in col if num != 0]
+            new_col += [0] * (4 - len(new_col))
+            for i in range(3):
+                if new_col[i] == new_col[i + 1] and new_col[i] != 0:
+                    new_col[i] *= 2
+                    new_col[i + 1] = 0
+                    score += new_col[i]
+            new_col = [num for num in new_col if num != 0]
+            new_col += [0] * (4 - len(new_col))
+            if not np.array_equal(col, new_col):
+                board[:, j] = new_col
+                moved = True
+    elif move_dir == 'DOWN':
+        for j in range(4):
+            col = board[:, j][::-1]
+            new_col = [num for num in col if num != 0]
+            new_col += [0] * (4 - len(new_col))
+            for i in range(3):
+                if new_col[i] == new_col[i + 1] and new_col[i] != 0:
+                    new_col[i] *= 2
+                    new_col[i + 1] = 0
+                    score += new_col[i]
+            new_col = [num for num in new_col if num != 0]
+            new_col += [0] * (4 - len(new_col))
+            if not np.array_equal(col, new_col):
+                board[:, j] = new_col[::-1]
+                moved = True
+    elif move_dir == 'LEFT':
+        for i in range(4):
+            row = board[i, :]
+            new_row = [num for num in row if num != 0]
+            new_row += [0] * (4 - len(new_row))
+            for j in range(3):
+                if new_row[j] == new_row[j + 1] and new_row[j] != 0:
+                    new_row[j] *= 2
+                    new_row[j + 1] = 0
+                    score += new_row[j]
+            new_row = [num for num in new_row if num != 0]
+            new_row += [0] * (4 - len(new_row))
+            if not np.array_equal(row, new_row):
+                board[i, :] = new_row
+                moved = True
+    elif move_dir == 'RIGHT':
+        for i in range(4):
+            row = board[i, :][::-1]
+            new_row = [num for num in row if num != 0]
+            new_row += [0] * (4 - len(new_row))
+            for j in range(3):
+                if new_row[j] == new_row[j + 1] and new_row[j] != 0:
+                    new_row[j] *= 2
+                    new_row[j + 1] = 0
+                    score += new_row[j]
+            new_row = [num for num in new_row if num != 0]
+            new_row += [0] * (4 - len(new_row))
+            if not np.array_equal(row, new_row):
+                board[i, :] = new_row[::-1]
+                moved = True
+    if moved:
+        add_new_number()
+    return moved
+
+# 使用道具
+def use_item(item_type, pos=None):
+    global score, board
+    
+    # 检查道具数量
+    if ITEM_TYPES[item_type]['count'] <= 0:
+        return False
+        
+    # 检查是否在冷却中
+    current_time = time.time()
+    if current_time - item_cooldowns[item_type] < ITEM_TYPES[item_type]['cooldown']:
+        return False
+    
+    # 如果没有指定位置，返回等待位置状态
+    if pos is None:
+        return True
+    
+    # 计算点击的单元格位置
+    j = (pos[0] - margin) // cell_size
+    i = (pos[1] - top_margin) // cell_size
+    
+    # 确保在棋盘范围内
+    if i < 0 or i >= 4 or j < 0 or j >= 4:
+        return False
+    
+    # 根据道具类型执行操作
+    if item_type == 0:  # 炸弹：清除一个方块
+        if board[i][j] != 0:
+            board[i][j] = 0
+            item_cooldowns[item_type] = current_time
+            ITEM_TYPES[item_type]['count'] -= 1
+            return True
+            
+    elif item_type == 1:  # 加分数：翻倍一个方块
+        if board[i][j] != 0:
+            board[i][j] *= 2
+            score += board[i][j]
+            item_cooldowns[item_type] = current_time
+            ITEM_TYPES[item_type]['count'] -= 1
+            return True
+            
+    elif item_type == 2:  # 消除行：清除一行
+        for col in range(4):
+            board[i][col] = 0
+        item_cooldowns[item_type] = current_time
+        ITEM_TYPES[item_type]['count'] -= 1
+        return True
+        
+    elif item_type == 3:  # 重置方块：重置一个方块及其周围
+        # 重置目标方块
+        if board[i][j] != 0:
+            board[i][j] = 2 if random.random() < 0.9 else 4
+        
+        # 重置周围八个方向的方块
+        directions = [(-1, -1), (-1, 0), (-1, 1),
+                      (0, -1),           (0, 1),
+                      (1, -1),  (1, 0),  (1, 1)]
+        
+        for dx, dy in directions:
+            ni, nj = i + dx, j + dy
+            if 0 <= ni < 4 and 0 <= nj < 4 and board[ni][nj] != 0:
+                board[ni][nj] = 2 if random.random() < 0.9 else 4
+        
+        item_cooldowns[item_type] = current_time
+        ITEM_TYPES[item_type]['count'] -= 1
+        return True
+        
+    return False
+
+# 检查游戏是否结束
+def is_game_over():
+    for i in range(4):
+        for j in range(4):
+            if board[i][j] == 0:
+                return False
+            if i < 3 and board[i][j] == board[i + 1][j]:
+                return False
+            if j < 3 and board[i][j] == board[i][j + 1]:
+                return False
+    return True
+
+# 显示游戏结束界面 - 简洁布局
+def show_game_over_screen():
+    global total_points, high_score
+    
+    # 计算获得积分
+    earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+    total_points += earned_points
+    if score > high_score:
+        high_score = score
+    save_player_data()
+    
+    # 创建独立的弹窗表面
+    popup_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    popup_surface.fill((0, 0, 0, 200))  # 半透明黑色
+    
+    # 游戏结束标题
+    game_over_text = TITLE_FONT.render('Game Over', True, (100, 180, 255))
+    game_over_rect = game_over_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
+    popup_surface.blit(game_over_text, game_over_rect)
+    
+    # 创建简洁的三列布局
+    info_font = pygame.font.SysFont('Arial', int(HEIGHT // 20), bold=True)
+    value_font = pygame.font.SysFont('Arial', int(HEIGHT // 15))
+    
+    # 列标签
+    score_label = info_font.render('Score', True, TEXT_COLOR)
+    best_label = info_font.render('Best', True, TEXT_COLOR)
+    points_label = info_font.render('Points', True, TEXT_COLOR)
+    
+    # 列值
+    score_value = value_font.render(str(score), True, (255, 255, 255))
+    best_value = value_font.render(str(high_score), True, (255, 255, 255))
+    points_value = value_font.render(str(earned_points), True, (255, 255, 255))
+    
+    # 列位置
+    col_width = WIDTH // 3
+    col_height = HEIGHT // 3
+    
+    # 标签位置
+    labels_y = HEIGHT // 3
+    score_label_rect = score_label.get_rect(center=(col_width // 2, labels_y))
+    best_label_rect = best_label.get_rect(center=(col_width + col_width // 2, labels_y))
+    points_label_rect = points_label.get_rect(center=(2 * col_width + col_width // 2, labels_y))
+    
+    # 值位置
+    values_y = HEIGHT // 2.5
+    score_value_rect = score_value.get_rect(center=(col_width // 2, values_y))
+    best_value_rect = best_value.get_rect(center=(col_width + col_width // 2, values_y))
+    points_value_rect = points_value.get_rect(center=(2 * col_width + col_width // 2, values_y))
+    
+    # 绘制标签
+    popup_surface.blit(score_label, score_label_rect)
+    popup_surface.blit(best_label, best_label_rect)
+    popup_surface.blit(points_label, points_label_rect)
+    
+    # 绘制值
+    popup_surface.blit(score_value, score_value_rect)
+    popup_surface.blit(best_value, best_value_rect)
+    popup_surface.blit(points_value, points_value_rect)
+
+    # 按钮布局 - 简洁并排
+    button_width = 180
+    button_height = 60
+    buttons_y = HEIGHT // 1.8
+    
+    # 重新开始按钮 - 放在左侧
+    restart_button = Button(
+        WIDTH // 4 - button_width // 2,  # 左侧
+        buttons_y,
+        button_width,
+        button_height,
+        'Reopen',
+        (0, 80, 120),
+        (0, 100, 150),
+        radius=15
+    )
+    
+    # 返回主菜单按钮 - 放在右侧
+    menu_button = Button(
+        3 * WIDTH // 4 - button_width // 2,  # 右侧
+        buttons_y,
+        button_width,
+        button_height,
+        'Return',
+        (70, 70, 120),
+        (90, 90, 150),
+        radius=15
+    )
+    
+    # 创建静态背景快照
+    background = screen.copy()
+    
+    clock = pygame.time.Clock()
+    while True:
+        # 绘制背景快照
+        screen.blit(background, (0, 0))
+        
+        # 绘制弹窗
+        screen.blit(popup_surface, (0, 0))
+        restart_button.draw()
+        menu_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                restart_button.check_hover(pos)
+                menu_button.check_hover(pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                if restart_button.is_clicked(pos, event):
+                    return True
+                elif menu_button.is_clicked(pos, event):
+                    return False
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_r:  # R键重新开始
+                    return True
+                elif event.key == pygame.K_m:  # M键返回菜单
+                    return False
+        
+        clock.tick(30)
+
+# 显示主菜单
+def show_main_menu():
+    # 创建按钮
+    start_button = Button(
+        WIDTH // 2 - 150,
+        HEIGHT // 2 - 50,
+        300,
+        80,
+        'New Game',
+        (0, 80, 120),
+        (0, 100, 150),
+        radius=15
+    )
+    
+    timed_button = Button(
+        WIDTH // 2 - 150,
+        HEIGHT // 2 + 50,
+        300,
+        80,
+        'Timed Mode',
+        (80, 80, 140),
+        (100, 100, 170),
+        radius=15
+    )
+    
+    difficulty_button = Button(
+        WIDTH // 2 - 150,
+        HEIGHT // 2 + 150,
+        300,
+        80,
+        'Difficulty',
+        (120, 80, 120),
+        (140, 100, 150),
+        radius=15
+    )
+    
+    shop_button = Button(
+        WIDTH // 2 - 150,
+        HEIGHT // 2 + 250,
+        300,
+        80,
+        'Shop',
+        (70, 70, 120),
+        (90, 90, 150),
+        radius=15
+    )
+    
+    quit_button = Button(
+        WIDTH // 2 - 150,
+        HEIGHT // 2 + 350,
+        300,
+        80,
+        'Quit',
+        (100, 0, 0),
+        (140, 0, 0),
+        radius=15
+    )
+    
+    while True:
+        screen.fill(MENU_BG_COLOR)
+        
+        # 绘制标题
+        title_text = TITLE_FONT.render('2048', True, (100, 180, 255))
+        title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
+        screen.blit(title_text, title_rect)
+        
+        # 绘制积分（右上角）
+        points_text = SCORE_FONT.render(f'Points: {total_points}', True, TEXT_COLOR)
+        points_rect = points_text.get_rect(topright=(WIDTH - 20, 20))
+        screen.blit(points_text, points_rect)
+        
+        # 绘制当前难度（右上角，在积分下方）
+        diff_text = SCORE_FONT.render(f'Difficulty: {game_settings.get_current_difficulty().capitalize()}', True, DIFFICULTIES[game_settings.get_current_difficulty()]['color'])
+        diff_rect = diff_text.get_rect(topright=(WIDTH - 20, 60))
+        screen.blit(diff_text, diff_rect)
+        
+        # 绘制按钮
+        start_button.draw()
+        timed_button.draw()
+        difficulty_button.draw()
+        shop_button.draw()
+        quit_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                start_button.check_hover(pos)
+                timed_button.check_hover(pos)
+                difficulty_button.check_hover(pos)
+                shop_button.check_hover(pos)
+                quit_button.check_hover(pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                if start_button.is_clicked(pos, event):
+                    # 开始新游戏
+                    return 'start'
+                elif timed_button.is_clicked(pos, event):
+                    # 限时模式
+                    return 'timed'
+                elif difficulty_button.is_clicked(pos, event):
+                    # 选择难度
+                    return 'difficulty'
+                elif shop_button.is_clicked(pos, event):
+                    return 'shop'
+                elif quit_button.is_clicked(pos, event):
+                    return 'quit'
+
+# 显示难度选择菜单 - 简化界面
+def show_difficulty_menu():
+    global game_settings
+    
+    # 创建返回按钮
+    back_button = Button(
+        WIDTH - 120,
+        40,
+        80,
+        40,
+        'Back',
+        (100, 0, 0),
+        (140, 0, 0),
+        radius=15
+    )
+    
+    # 创建难度按钮 - 垂直排列
+    button_width = 300
+    button_height = 80
+    button_spacing = 30
+    
+    easy_button = Button(
+        WIDTH // 2 - button_width // 2,
+        HEIGHT // 3,
+        button_width,
+        button_height,
+        'Easy',
+        DIFFICULTIES['easy']['color'],
+        (min(DIFFICULTIES['easy']['color'][0] + 30, 255), 
+         min(DIFFICULTIES['easy']['color'][1] + 30, 255), 
+         min(DIFFICULTIES['easy']['color'][2] + 30, 255)),
+        radius=15
+    )
+    
+    medium_button = Button(
+        WIDTH // 2 - button_width // 2,
+        HEIGHT // 3 + button_height + button_spacing,
+        button_width,
+        button_height,
+        'Medium',
+        DIFFICULTIES['medium']['color'],
+        (min(DIFFICULTIES['medium']['color'][0] + 30, 255), 
+         min(DIFFICULTIES['medium']['color'][1] + 30, 255), 
+         min(DIFFICULTIES['medium']['color'][2] + 30, 255)),
+        radius=15
+    )
+    
+    hard_button = Button(
+        WIDTH // 2 - button_width // 2,
+        HEIGHT // 3 + (button_height + button_spacing) * 2,
+        button_width,
+        button_height,
+        'Hard',
+        DIFFICULTIES['hard']['color'],
+        (min(DIFFICULTIES['hard']['color'][0] + 30, 255), 
+         min(DIFFICULTIES['hard']['color'][1] + 30, 255), 
+         min(DIFFICULTIES['hard']['color'][2] + 30, 255)),
+        radius=15
+    )
+    
+    # 标题显示难度加成信息
+    title_text = TITLE_FONT.render('Select Difficulty', True, (100, 180, 255))
+    title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 6))
+    
+    # 加成信息
+    multiplier_text = MENU_FONT.render(f'Earn {int(game_settings.easy.points_multiplier*100)}% - {int(game_settings.hard.points_multiplier*100)}% more points', True, TEXT_COLOR)
+    multiplier_rect = multiplier_text.get_rect(center=(WIDTH // 2, HEIGHT // 6 + 60))
+    
+    while True:
+        screen.fill(MENU_BG_COLOR)
+        
+        # 绘制标题
+        screen.blit(title_text, title_rect)
+        screen.blit(multiplier_text, multiplier_rect)
+        
+        # 绘制按钮
+        easy_button.draw()
+        medium_button.draw()
+        hard_button.draw()
+        
+        # 绘制返回按钮
+        back_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                easy_button.check_hover(pos)
+                medium_button.check_hover(pos)
+                hard_button.check_hover(pos)
+                back_button.check_hover(pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                if easy_button.is_clicked(pos, event):
+                    game_settings.set_difficulty("easy")
+                    return
+                elif medium_button.is_clicked(pos, event):
+                    game_settings.set_difficulty("medium")
+                    return
+                elif hard_button.is_clicked(pos, event):
+                    game_settings.set_difficulty("hard")
+                    return
+                elif back_button.rect.collidepoint(pos):
+                    return
+
+# 显示商城 - 田字格布局
+def show_shop():
+    global total_points
+    
+    # 创建返回按钮
+    back_button = Button(
+        WIDTH - 120,
+        40,
+        80,
+        40,
+        'Back',
+        (100, 0, 0),
+        (140, 0, 0),
+        radius=15
+    )
+    
+    # 创建道具按钮 - 田字格布局 (2x2)
+    item_buttons = []
+    button_size = min(WIDTH, HEIGHT) // 5  # 按钮大小
+    
+    # 计算网格位置
+    grid_width = 2 * button_size + button_size // 2
+    grid_height = 2 * button_size + button_size // 2
+    start_x = (WIDTH - grid_width) // 2
+    start_y = (HEIGHT - grid_height) // 2 + 50
+    
+    # 创建道具按钮
+    for i in range(len(ITEM_TYPES)):
+        row = i // 2
+        col = i % 2
+        
+        button = ItemButton(
+            start_x + col * (button_size + button_size // 2),
+            start_y + row * (button_size + button_size // 2),
+            button_size,
+            button_size,
+            i,
+            ITEM_TYPES[i]['cooldown']
+        )
+        button.is_shop_item = True  # 标记为商店中的道具
+        item_buttons.append(button)
+    
+    # 购买成功提示
+    purchase_success = False
+    success_timer = 0
+    
+    while True:
+        screen.fill(SHOP_BG_COLOR)
+        
+        # 绘制标题
+        title_text = TITLE_FONT.render('Shop', True, (100, 180, 255))
+        title_rect = title_text.get_rect(center=(WIDTH // 2, HEIGHT // 10))
+        screen.blit(title_text, title_rect)
+        
+        # 绘制积分
+        points_text = MENU_FONT.render(f'Total Points: {total_points}', True, TEXT_COLOR)
+        points_rect = points_text.get_rect(center=(WIDTH // 2, HEIGHT // 10 + 70))
+        screen.blit(points_text, points_rect)
+        
+        # 绘制道具网格
+        for i, button in enumerate(item_buttons):
+            button.draw()
+            
+            # 计算道具当前价格
+            current_price = int(ITEM_TYPES[i]['base_price'] * (ITEM_TYPES[i]['price_multiplier'] ** ITEM_TYPES[i]['count']))
+            
+            # 绘制价格
+            price_text = SHOP_FONT.render(f"{current_price}P", True, (255, 255, 0))
+            price_rect = price_text.get_rect(center=(button.rect.centerx, button.rect.bottom + 60))
+            screen.blit(price_text, price_rect)
+        
+        # 绘制返回按钮
+        back_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        # 绘制购买成功提示
+        if purchase_success:
+            success_timer += 1
+            if success_timer < 60:  # 显示1秒（假设帧率60）
+                pygame.draw.rect(screen, (0, 150, 0, 200), (WIDTH // 2 - 150, HEIGHT // 3, 300, 50), border_radius=10)
+                success_text = MENU_FONT.render('Purchase Successful!', True, TEXT_COLOR)
+                screen.blit(success_text, (WIDTH // 2 - success_text.get_width() // 2, HEIGHT // 3 + 10))
+            else:
+                purchase_success = False
+                success_timer = 0
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                for button in item_buttons:
+                    button.check_hover(pos)
+                back_button.check_hover(pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:  # 修复拼写错误
+                pos = pygame.mouse.get_pos()
+                
+                # 检查是否点击了道具
+                for i, button in enumerate(item_buttons):
+                    if button.rect.collidepoint(pos):
+                        current_price = int(ITEM_TYPES[i]['base_price'] * (ITEM_TYPES[i]['price_multiplier'] ** ITEM_TYPES[i]['count']))
+                        if total_points >= current_price:
+                            total_points -= current_price
+                            ITEM_TYPES[i]['count'] += 1
+                            save_player_data()
+                            purchase_success = True
+                            success_timer = 0
+                
+                # 检查返回按钮
+                if back_button.rect.collidepoint(pos) and event.button == 1:
+                    return
+
+# 显示退出确认弹窗 - 修复作用域问题
+def show_exit_popup():
+    global total_points, high_score, score  # 声明全局变量
+    
+    # 创建静态背景快照
+    background = screen.copy()
+    
+    # 创建弹窗表面
+    popup_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    popup_surface.fill((0, 0, 0, 180))  # 半透明黑色
+    
+    # 创建大按钮 - 左右分开
+    button_width = 180
+    button_height = 80
+    button_y = HEIGHT // 2
+    
+    quit_button = Button(
+        WIDTH // 4 - button_width // 2,
+        button_y,
+        button_width,
+        button_height,
+        'QUIT',
+        (180, 0, 0),
+        (220, 0, 0),
+        radius=15
+    )
+    
+    cancel_button = Button(
+        3 * WIDTH // 4 - button_width // 2,
+        button_y,
+        button_width,
+        button_height,
+        'CANCEL',
+        (70, 70, 120),
+        (90, 90, 150),
+        radius=15
+    )
+    
+    # 显示结算信息
+    earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+    points_text = MENU_FONT.render(f'Earned Points: +{earned_points}', True, (255, 215, 0))
+    points_rect = points_text.get_rect(center=(WIDTH // 2, HEIGHT // 3))
+    
+    clock = pygame.time.Clock()
+    while True:
+        # 绘制背景快照
+        screen.blit(background, (0, 0))
+        
+        # 绘制弹窗
+        screen.blit(popup_surface, (0, 0))
+        screen.blit(points_text, points_rect)
+        quit_button.draw()
+        cancel_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                pos = pygame.mouse.get_pos()
+                quit_button.check_hover(pos)
+                cancel_button.check_hover(pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                if quit_button.is_clicked(pos, event):
+                    # 结算当前游戏
+                    earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+                    total_points += earned_points
+                    if score > high_score:
+                        high_score = score
+                    save_player_data()
+                    return 'main_menu'
+                elif cancel_button.is_clicked(pos, event):
+                    return 'cancel'
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_q:  # Q键退出
+                    earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+                    total_points += earned_points
+                    if score > high_score:
+                        high_score = score
+                    save_player_data()
+                    return 'main_menu'
+                elif event.key == pygame.K_c:  # C键取消
+                    return 'cancel'
+        
+        clock.tick(30)
+
+# 限时模式结束画面 - 简洁布局
+def show_timed_game_over(final_score, earned_points):
+    # 创建弹窗
+    popup_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    popup_surface.fill((0, 0, 0, 180))
+    
+    # 游戏结束标题
+    game_over_text = TITLE_FONT.render('Game Over', True, (100, 180, 255))
+    game_over_rect = game_over_text.get_rect(center=(WIDTH // 2, HEIGHT // 4))
+    popup_surface.blit(game_over_text, game_over_rect)
+    
+    # 创建简洁的三列布局
+    info_font = pygame.font.SysFont('Arial', int(HEIGHT // 20), bold=True)
+    value_font = pygame.font.SysFont('Arial', int(HEIGHT // 15))
+    
+    # 列标签
+    score_label = info_font.render('Score', True, TEXT_COLOR)
+    best_label = info_font.render('Best', True, TEXT_COLOR)
+    points_label = info_font.render('Points', True, TEXT_COLOR)
+    
+    # 列值
+    score_value = value_font.render(str(final_score), True, (255, 255, 255))
+    best_value = value_font.render(str(high_score), True, (255, 255, 255))
+    points_value = value_font.render(str(earned_points), True, (255, 255, 255))
+    
+    # 列位置
+    col_width = WIDTH // 3
+    col_height = HEIGHT // 3
+    
+    # 标签位置
+    labels_y = HEIGHT // 3
+    score_label_rect = score_label.get_rect(center=(col_width // 2, labels_y))
+    best_label_rect = best_label.get_rect(center=(col_width + col_width // 2, labels_y))
+    points_label_rect = points_label.get_rect(center=(2 * col_width + col_width // 2, labels_y))
+    
+    # 值位置
+    values_y = HEIGHT // 2.5
+    score_value_rect = score_value.get_rect(center=(col_width // 2, values_y))
+    best_value_rect = best_value.get_rect(center=(col_width + col_width // 2, values_y))
+    points_value_rect = points_value.get_rect(center=(2 * col_width + col_width // 2, values_y))
+    
+    # 绘制标签
+    popup_surface.blit(score_label, score_label_rect)
+    popup_surface.blit(best_label, best_label_rect)
+    popup_surface.blit(points_label, points_label_rect)
+    
+    # 绘制值
+    popup_surface.blit(score_value, score_value_rect)
+    popup_surface.blit(best_value, best_value_rect)
+    popup_surface.blit(points_value, points_value_rect)
+
+    # 返回主菜单按钮
+    menu_button = Button(
+        WIDTH // 2 - 100,
+        HEIGHT // 1.8,
+        200,
+        60,
+        'Main Menu',
+        (70, 70, 120),
+        (90, 90, 150),
+        radius=15
+    )
+    
+    # 背景快照
+    background = screen.copy()
+    
+    clock = pygame.time.Clock()
+    while True:
+        screen.blit(background, (0, 0))
+        screen.blit(popup_surface, (0, 0))
+        menu_button.draw()
+        
+        # 绘制粒子效果
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.MOUSEMOTION:
+                menu_button.check_hover(pygame.mouse.get_pos())
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if menu_button.rect.collidepoint(pygame.mouse.get_pos()):
+                    return
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    return
+        
+        clock.tick(30)
+
+# 限时模式
+def timed_mode():
+    global board, score, selected_item, total_points, particle_system
+    board = np.zeros((4, 4), dtype=int)
+    score = 0
+    selected_item = None
+    add_new_number()
+    add_new_number()
+    
+    # 设置游戏时间（秒） - 随机30-60秒
+    total_time = random.randint(30, 60)
+    start_time = time.time()
+    
+    # 创建道具按钮，位置在屏幕底部上方（参考main_game，但不创建退出按钮）
+    item_buttons = []
+    button_width = int(HEIGHT // 12)
+    button_height = int(HEIGHT // 12)
+    button_margin = 20
+    
+    # 计算按钮总宽度
+    total_width = len(ITEM_TYPES) * button_width + (len(ITEM_TYPES) - 1) * button_margin
+    
+    # 确保按钮不会超出屏幕
+    if total_width > WIDTH - 40:  # 屏幕两侧留20像素边距
+        button_width = int((WIDTH - 40 - (len(ITEM_TYPES) - 1) * button_margin) / len(ITEM_TYPES))
+        button_height = button_width  # 保持正方形
+        total_width = len(ITEM_TYPES) * button_width + (len(ITEM_TYPES) - 1) * button_margin
+    
+    start_x = (WIDTH - total_width) // 2
+    
+    # 道具栏上移：距离屏幕底部150像素
+    bottom_margin = 300
+    
+    # 创建道具按钮
+    for i in range(len(ITEM_TYPES)):
+        button = ItemButton(
+            start_x + i * (button_width + button_margin),
+            HEIGHT - button_height - bottom_margin,
+            button_width,
+            button_height,
+            i,
+            ITEM_TYPES[i]['cooldown']
+        )
+        item_buttons.append(button)
+    
+    # 滑动阈值设置更小以提高灵敏度
+    swipe_threshold = 40
+    start_pos = None
+    last_move_time = time.time()
+    move_cooldown = 0.05  # 移动冷却时间，防止过于频繁的移动
+    
+    while True:
+        current_time = time.time()
+        elapsed_time = current_time - start_time
+        remaining_time = max(0, total_time - elapsed_time)
+        
+        # 绘制游戏板
+        draw_board()
+        
+        # 更新和绘制粒子
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        # 绘制倒计时 - 更醒目的显示
+        time_percent = remaining_time / total_time
+        time_color = (
+            int(255 * (1 - time_percent)),
+            int(255 * time_percent),
+            0
+        )
+        
+        # 绘制倒计时背景条
+        bar_width = WIDTH * 0.7
+        bar_height = 30
+        bar_x = (WIDTH - bar_width) // 2
+        bar_y = 20
+        
+        # 背景
+        pygame.draw.rect(screen, (30, 30, 50), (bar_x, bar_y, bar_width, bar_height), border_radius=15)
+        # 前景
+        pygame.draw.rect(screen, time_color, (bar_x, bar_y, bar_width * time_percent, bar_height), border_radius=15)
+        # 边框
+        pygame.draw.rect(screen, (0, 0, 0), (bar_x, bar_y, bar_width, bar_height), 2, border_radius=15)
+        
+        # 时间文本
+        time_text = BUTTON_FONT.render(f"{int(remaining_time)}s", True, TEXT_COLOR)
+        screen.blit(time_text, (WIDTH // 2 - time_text.get_width() // 2, bar_y + bar_height // 2 - time_text.get_height() // 2))
+        
+        # 绘制道具按钮
+        for button in item_buttons:
+            button.draw()
+        
+        # 如果选择了道具，显示提示
+        if selected_item is not None:
+            prompt_text = BUTTON_FONT.render(f"Select target: {ITEM_TYPES[selected_item]['name']}", True, (255, 255, 0))
+            screen.blit(prompt_text, (WIDTH // 2 - prompt_text.get_width() // 2, HEIGHT - bottom_margin - 30))
+        
+        pygame.display.flip()
+        
+        # 检查时间是否结束
+        if remaining_time <= 0:
+            # 时间到，结算（有加成）
+            earned_points = int(score * game_settings.current_difficulty.points_multiplier * 1.5)  # 1.5倍积分加成
+            total_points += earned_points
+            save_player_data()
+            show_timed_game_over(score, earned_points)
+            return 'main_menu'
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_UP:
+                    move_numbers('UP')
+                elif event.key == pygame.K_DOWN:
+                    move_numbers('DOWN')
+                elif event.key == pygame.K_LEFT:
+                    move_numbers('LEFT')
+                elif event.key == pygame.K_RIGHT:
+                    move_numbers('RIGHT')
+            elif event.type == pygame.FINGERDOWN:
+                start_pos = (event.x * WIDTH, event.y * HEIGHT)
+                last_move_time = current_time
+            elif event.type == pygame.FINGERUP:
+                if start_pos and current_time - last_move_time > move_cooldown:
+                    end_pos = (event.x * WIDTH, event.y * HEIGHT)
+                    dx = end_pos[0] - start_pos[0]
+                    dy = end_pos[1] - start_pos[1]
+                    if abs(dx) > abs(dy):
+                        if dx > swipe_threshold:
+                            move_numbers('RIGHT')
+                        elif dx < -swipe_threshold:
+                            move_numbers('LEFT')
+                    else:
+                        if dy > swipe_threshold:
+                            move_numbers('DOWN')
+                        elif dy < -swipe_threshold:
+                            move_numbers('UP')
+                    start_pos = None
+                    last_move_time = current_time
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                
+                # 检查是否点击了道具按钮
+                for i, button in enumerate(item_buttons):
+                    if button.rect.collidepoint(pos) and ITEM_TYPES[i]['count'] > 0:  # 直接使用全局道具计数
+                        # 检查冷却时间
+                        if current_time - button.last_used >= ITEM_TYPES[i]['cooldown']:
+                            selected_item = i
+                            button.last_used = current_time
+                
+                # 如果已经选择了道具，处理棋盘点击
+                if selected_item is not None:
+                    if use_item(selected_item, pos):
+                        selected_item = None
+                
+                start_pos = pos
+                last_move_time = current_time
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if start_pos and current_time - last_move_time > move_cooldown:
+                    end_pos = event.pos
+                    dx = end_pos[0] - start_pos[0]
+                    dy = end_pos[1] - start_pos[1]
+                    if abs(dx) > abs(dy):
+                        if dx > swipe_threshold:
+                            move_numbers('RIGHT')
+                        elif dx < -swipe_threshold:
+                            move_numbers('LEFT')
+                    else:
+                        if dy > swipe_threshold:
+                            move_numbers('DOWN')
+                        elif dy < -swipe_threshold:
+                            move_numbers('UP')
+                    start_pos = None
+                    last_move_time = current_time
+
+        # 检查游戏结束（棋盘无法移动）
+        if is_game_over():
+            # 棋盘结束，正常结算
+            earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+            total_points += earned_points
+            save_player_data()
+            show_timed_game_over(score, earned_points)
+            return 'main_menu'
+
+# 主游戏循环
+def main_game():
+    global board, score, selected_item, total_points, particle_system
+    board = np.zeros((4, 4), dtype=int)
+    score = 0
+    selected_item = None
+    add_new_number()
+    add_new_number()
+    
+    # 创建退出按钮
+    exit_button_width = int(HEIGHT // 12)
+    exit_button_height = int(HEIGHT // 12)
+    exit_button = Button(
+        WIDTH - exit_button_width - 20,
+        20,
+        exit_button_width,
+        exit_button_height,
+        'Exit',
+        (100, 0, 0),
+        (140, 0, 0),
+        radius=10
+    )
+    
+    # 创建道具按钮，位置在屏幕底部上方
+    item_buttons = []
+    button_width = int(HEIGHT // 12)
+    button_height = int(HEIGHT // 12)
+    button_margin = 20
+    
+    # 计算按钮总宽度
+    total_width = len(ITEM_TYPES) * button_width + (len(ITEM_TYPES) - 1) * button_margin
+    
+    # 确保按钮不会超出屏幕
+    if total_width > WIDTH - 40:  # 屏幕两侧留20像素边距
+        button_width = int((WIDTH - 40 - (len(ITEM_TYPES) - 1) * button_margin) / len(ITEM_TYPES))
+        button_height = button_width  # 保持正方形
+        total_width = len(ITEM_TYPES) * button_width + (len(ITEM_TYPES) - 1) * button_margin
+    
+    start_x = (WIDTH - total_width) // 2
+    
+    # 道具栏上移：距离屏幕底部150像素
+    bottom_margin = 300
+    
+    # 创建道具按钮
+    for i in range(len(ITEM_TYPES)):
+        button = ItemButton(
+            start_x + i * (button_width + button_margin),
+            HEIGHT - button_height - bottom_margin,
+            button_width,
+            button_height,
+            i,
+            ITEM_TYPES[i]['cooldown']
+        )
+        item_buttons.append(button)
+    
+    # 滑动阈值设置更小以提高灵敏度
+    swipe_threshold = 40
+    start_pos = None
+    last_move_time = time.time()
+    move_cooldown = 0.05  # 移动冷却时间，防止过于频繁的移动
+    
+    while True:
+        current_time = time.time()
+        
+        # 绘制游戏板
+        draw_board()
+        
+        # 更新和绘制粒子
+        particle_system.update()
+        particle_system.draw(screen)
+        
+        # 绘制道具按钮
+        for button in item_buttons:
+            button.draw()
+        
+        # 绘制退出按钮
+        exit_button.draw()
+        
+        # 如果选择了道具，显示提示
+        if selected_item is not None:
+            prompt_text = BUTTON_FONT.render(f"Select target: {ITEM_TYPES[selected_item]['name']}", True, (255, 255, 0))
+            screen.blit(prompt_text, (WIDTH // 2 - prompt_text.get_width() // 2, HEIGHT - bottom_margin - 30))
+        
+        pygame.display.flip()
+        
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                pygame.quit()
+                sys.exit()
+            elif event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    popup_result = show_exit_popup()
+                    if popup_result == 'main_menu':
+                        return 'main_menu'
+                    elif popup_result == 'cancel':
+                        # 继续游戏
+                        continue
+                elif event.key == pygame.K_UP:
+                    move_numbers('UP')
+                elif event.key == pygame.K_DOWN:
+                    move_numbers('DOWN')
+                elif event.key == pygame.K_LEFT:
+                    move_numbers('LEFT')
+                elif event.key == pygame.K_RIGHT:
+                    move_numbers('RIGHT')
+                elif event.key == pygame.K_q:  # Q键结算并返回
+                    earned_points = int(score * game_settings.current_difficulty.points_multiplier)
+                    total_points += earned_points
+                    if score > high_score:
+                        high_score = score
+                    save_player_data()
+                    return 'main_menu'
+                elif event.key == pygame.K_c:  # C键取消
+                    continue
+            elif event.type == pygame.FINGERDOWN:
+                start_pos = (event.x * WIDTH, event.y * HEIGHT)
+                last_move_time = current_time
+            elif event.type == pygame.FINGERUP:
+                if start_pos and current_time - last_move_time > move_cooldown:
+                    end_pos = (event.x * WIDTH, event.y * HEIGHT)
+                    dx = end_pos[0] - start_pos[0]
+                    dy = end_pos[1] - start_pos[1]
+                    if abs(dx) > abs(dy):
+                        if dx > swipe_threshold:
+                            move_numbers('RIGHT')
+                        elif dx < -swipe_threshold:
+                            move_numbers('LEFT')
+                    else:
+                        if dy > swipe_threshold:
+                            move_numbers('DOWN')
+                        elif dy < -swipe_threshold:
+                            move_numbers('UP')
+                    start_pos = None
+                    last_move_time = current_time
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                pos = pygame.mouse.get_pos()
+                
+                # 检查是否点击了退出按钮
+                if exit_button.rect.collidepoint(pos):
+                    popup_result = show_exit_popup()
+                    if popup_result == 'main_menu':
+                        return 'main_menu'
+                    elif popup_result == 'cancel':
+                        # 继续游戏
+                        continue
+                
+                # 检查是否点击了道具按钮
+                for i, button in enumerate(item_buttons):
+                    if button.rect.collidepoint(pos) and ITEM_TYPES[i]['count'] > 0:  # 直接使用全局道具计数
+                        # 检查冷却时间
+                        if current_time - button.last_used >= ITEM_TYPES[i]['cooldown']:
+                            selected_item = i
+                            button.last_used = current_time
+                
+                # 如果已经选择了道具，处理棋盘点击
+                if selected_item is not None:
+                    if use_item(selected_item, pos):
+                        selected_item = None
+                
+                start_pos = pos
+                last_move_time = current_time
+            elif event.type == pygame.MOUSEBUTTONUP:
+                if start_pos and current_time - last_move_time > move_cooldown:
+                    end_pos = event.pos
+                    dx = end_pos[0] - start_pos[0]
+                    dy = end_pos[1] - start_pos[1]
+                    if abs(dx) > abs(dy):
+                        if dx > swipe_threshold:
+                            move_numbers('RIGHT')
+                        elif dx < -swipe_threshold:
+                            move_numbers('LEFT')
+                    else:
+                        if dy > swipe_threshold:
+                            move_numbers('DOWN')
+                        elif dy < -swipe_threshold:
+                            move_numbers('UP')
+                    start_pos = None
+                    last_move_time = current_time
+
+        # 检查游戏结束
+        if is_game_over():
+            if show_game_over_screen():
+                # 重新开始游戏
+                board = np.zeros((4, 4), dtype=int)
+                score = 0
+                selected_item = None
+                add_new_number()
+                add_new_number()
+            else:
+                return 'main_menu'
+                
+        # 检查是否达到2048
+        if np.any(board == 2048):
+            if show_game_over_screen():
+                # 重新开始游戏
+                board = np.zeros((4, 4), dtype=int)
+                score = 0
+                selected_item = None
+                add_new_number()
+                add_new_number()
+            else:
+                return 'main_menu'
+
+# 主程序
+def main():
+    global total_points, particle_system
+    
+    # 加载玩家数据
+    load_player_data()
+    
+    while True:
+        # 显示主菜单
+        menu_choice = show_main_menu()
+        
+        if menu_choice == 'start':
+            # 开始新游戏
+            game_result = main_game()
+            if game_result == 'quit':
+                pygame.quit()
+                sys.exit()
+        elif menu_choice == 'timed':
+            # 开始限时模式
+            game_result = timed_mode()
+            if game_result == 'quit':
+                pygame.quit()
+                sys.exit()
+        elif menu_choice == 'difficulty':
+            # 选择难度
+            show_difficulty_menu()
+        elif menu_choice == 'shop':
+            # 进入商城
+            show_shop()
+        elif menu_choice == 'quit':
+            # 退出程序
+            pygame.quit()
+            sys.exit()
+
+if __name__ == '__main__':
+    main()
